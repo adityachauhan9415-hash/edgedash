@@ -11,12 +11,32 @@ cycle_log     — one row per agent run within a pipeline cycle
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
+
+
+# ---------------------------------------------------------------------------
+# Stable listing ID
+# ---------------------------------------------------------------------------
+
+def make_listing_id(source: str, url: str) -> str:
+    """
+    Derive a stable, deterministic listing ID from (source, url).
+
+    The same job posting fetched on different days always produces the same
+    ID, so upsert_listings treats it as an update rather than a new row.
+    This is the single authoritative implementation — no other module should
+    reimplement this logic.
+
+    Returns a 16-character lowercase hex string (64-bit prefix of SHA-256).
+    """
+    payload = f"{source}::{url}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------

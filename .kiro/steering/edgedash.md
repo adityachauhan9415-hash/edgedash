@@ -71,3 +71,40 @@ Raise these with the user before implementing:
 - Giving the Dashboard any write path to Storage
 - Introducing a new external dependency not already in the project
 
+
+---
+
+## Network & Sources
+
+9. **Every external source lives behind a `Source` class with a uniform interface.**
+   The Fetcher iterates over registered Source instances; it never contains
+   source-specific parsing logic. Adding a new source means adding a new Source
+   class — the Fetcher itself must not need editing.
+
+10. **Every Source returns a list of normalised dicts with exactly these keys:**
+    `source`, `external_id`, `title`, `company`, `location`, `url`,
+    `description`, `posted_at`, `raw`.
+    Missing values must be `None` — never empty string, never `"N/A"`.
+
+11. **All network calls go through one shared helper.**
+    That helper enforces a 10-second timeout (configurable), 2 retry attempts
+    with exponential backoff, and a descriptive `User-Agent` header.
+    Bare `requests.get()` calls are not permitted anywhere else in the codebase.
+
+12. **A source failing must never kill the cycle.**
+    Wrap each source's fetch in a per-source try/except. Log the failure to
+    `cycle_log` with `status="failed"` and a clear error message, then continue
+    to the next source. One dead job board must not prevent other sources from
+    running.
+
+13. **Secrets come from environment variables loaded from a `.env` file.**
+    The `.env` file is gitignored. No API key or credential may appear as a
+    literal in code or in `config.yaml`. If a required key is absent at runtime,
+    the source must skip itself and emit a clear log line — it must not raise an
+    exception or crash the cycle.
+
+14. **Respect the source.**
+    Rate-limit to at most 1 request per second per source. Set a real,
+    descriptive `User-Agent` string. Honour any documented page limits or
+    `Retry-After` headers. Do not hammer an API and do not misrepresent the
+    client.

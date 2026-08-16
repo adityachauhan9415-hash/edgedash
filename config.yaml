@@ -1,0 +1,25 @@
+# EdgeDash configuration
+# Values here are defaults; any key can be overridden via environment variable.
+# Secrets (API tokens) must NOT be placed in this file — put them in .env.
+
+job_search:
+  target_role: "Data Engineer"
+  city: "San Francisco, CA"
+
+pipeline:
+  fetch_agent: "Fetcher"
+  score_agent: "Scorer"
+  gap_agent: "GapAnalyzer"
+
+sources:
+  # Sources are queried in order.  Each name must match a key in the SOURCES
+  # registry (edgedash/sources/__init__.py).
+  enabled:
+    - arbeitnow     # free, no token required
+    # - apify       # requires APIFY_TOKEN in .env
+
+storage:
+  db_path: "edgedash.db"
+
+profile:
+  profile_path: "profile.yaml"

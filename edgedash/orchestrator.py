@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from edgedash.agents.base import Agent, AgentResult
+from edgedash.agents.fetcher import Fetcher, set_cycle_id as _set_fetcher_cycle_id
 from edgedash.agents.mock_fetcher import MockFetcher
 from edgedash.config import Config
 from edgedash.storage import Storage
@@ -76,12 +77,13 @@ class _PlaceholderAgent(Agent):
 # ---------------------------------------------------------------------------
 # Agent registry
 # ---------------------------------------------------------------------------
-# To swap in a real agent: replace the value in this dict with its class.
-# The Orchestrator resolves names from config at runtime.
+# To swap in a new agent: replace the value in this dict.
+# MockFetcher remains available for offline development; the Orchestrator
+# picks it automatically when config.use_mock_fetcher is True.
 
 _AGENT_REGISTRY: dict[str, Agent] = {
-    "MockFetcher":  MockFetcher(),
-    "Fetcher":      _PlaceholderAgent("Fetcher"),      # real Fetcher goes here
+    "Fetcher":      Fetcher(),          # real network Fetcher  ← CHANGED
+    "MockFetcher":  MockFetcher(),      # offline / test Fetcher
     "Scorer":       _PlaceholderAgent("Scorer"),
     "GapAnalyzer":  _PlaceholderAgent("GapAnalyzer"),
 }
@@ -208,8 +210,12 @@ def _build_plan(config: Config, state: dict) -> list[tuple[str, str]]:
     """
     plan: list[tuple[str, str]] = []
 
+    # Honour the offline-dev flag: EDGEDASH_USE_MOCK=1 swaps in MockFetcher
+    # regardless of what fetch_agent says.
+    fetch_agent_name = "MockFetcher" if config.use_mock_fetcher else config.fetch_agent
+
     plan.append((
-        config.fetch_agent,
+        fetch_agent_name,
         "Always fetch — listings may have changed since last run."
         if state["last_fetch_time"] == "never"
         else f"Last fetch was {state['last_fetch_time']}; refresh listings.",
