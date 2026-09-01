@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS listings (
     score           REAL,
     score_notes     TEXT,
     gap_analysis    TEXT,
+    scored_at       TEXT,
     verified        INTEGER DEFAULT 0
 );
 
@@ -326,12 +327,57 @@ class Storage:
                 ),
             )
 
+    def clear_all_scores(self) -> int:
+        """
+        Set score, score_notes, gap_analysis (components), and scored_at to
+        NULL for every listing.  Never touches extraction_cache.
+
+        Returns the number of rows actually cleared (those that had a score).
+        """
+        with self._connect() as conn:
+            affected = conn.execute(
+                "SELECT COUNT(*) AS n FROM listings WHERE score IS NOT NULL"
+            ).fetchone()["n"]
+            conn.execute(
+                """
+                UPDATE listings
+                SET score       = NULL,
+                    score_notes = NULL,
+                    gap_analysis = NULL,
+                    scored_at   = NULL
+                WHERE score IS NOT NULL
+                """
+            )
+        return affected
+
+    def clear_listing_score(self, listing_id: str) -> int:
+        """
+        Set score, score_notes, gap_analysis, and scored_at to NULL for the
+        given listing only.  Never touches extraction_cache.
+
+        Returns 1 if the listing existed and had a score, 0 otherwise
+        (including nonexistent ids).
+        """
+        with self._connect() as conn:
+            affected = conn.execute(
+                "SELECT COUNT(*) AS n FROM listings "
+                "WHERE id = ? AND score IS NOT NULL",
+                (listing_id,),
+            ).fetchone()["n"]
+            conn.execute(
+                """
+                UPDATE listings
+                SET score       = NULL,
+                    score_notes = NULL,
+                    gap_analysis = NULL,
+                    scored_at   = NULL
+                WHERE id = ? AND score IS NOT NULL
+                """,
+                (listing_id,),
+            )
+        return affected
+
     def _ensure_score_columns(self) -> None:
-        """
-        Add scored_at and gap_analysis columns if the DB predates them.
-        Safe migration: uses ADD COLUMN which is a no-op if column exists
-        in SQLite >= 3.37; we guard with PRAGMA table_info for older SQLite.
-        """
         with self._connect() as conn:
             existing = {
                 r["name"]
