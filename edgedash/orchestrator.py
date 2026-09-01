@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from edgedash.agents.base import Agent, AgentResult
 from edgedash.agents.fetcher import Fetcher, set_cycle_id as _set_fetcher_cycle_id
 from edgedash.agents.mock_fetcher import MockFetcher
+from edgedash.agents.scorer import Scorer
 from edgedash.config import Config
 from edgedash.storage import Storage
 
@@ -82,9 +83,9 @@ class _PlaceholderAgent(Agent):
 # picks it automatically when config.use_mock_fetcher is True.
 
 _AGENT_REGISTRY: dict[str, Agent] = {
-    "Fetcher":      Fetcher(),          # real network Fetcher  ← CHANGED
+    "Fetcher":      Fetcher(),          # real network Fetcher
     "MockFetcher":  MockFetcher(),      # offline / test Fetcher
-    "Scorer":       _PlaceholderAgent("Scorer"),
+    "Scorer":       Scorer(),           # deterministic scoring agent  ← REGISTERED
     "GapAnalyzer":  _PlaceholderAgent("GapAnalyzer"),
 }
 

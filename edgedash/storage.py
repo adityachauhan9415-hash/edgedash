@@ -277,6 +277,77 @@ class Storage:
             )
 
     # ------------------------------------------------------------------
+    # Scoring  (rule 18: idempotent; rule 20: distribution logged by agent)
+    # ------------------------------------------------------------------
+
+    def read_unscored_listings(self, limit: int = 25) -> list[dict]:
+        """
+        Return up to `limit` listings that have not yet been scored.
+        Safe migration: adds scored_at and components columns if absent.
+        """
+        self._ensure_score_columns()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM listings WHERE score IS NULL "
+                "ORDER BY fetched_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def save_score(
+        self,
+        listing_id: str,
+        score: int,
+        reason: str,
+        components: dict,
+    ) -> None:
+        """
+        Persist score, reason, components JSON, and scored_at for one listing.
+        Safe migration: adds scored_at and components columns if absent.
+        """
+        self._ensure_score_columns()
+        now = self._now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE listings
+                SET score       = ?,
+                    score_notes = ?,
+                    gap_analysis = ?,
+                    scored_at   = ?
+                WHERE id = ?
+                """,
+                (
+                    score,
+                    reason,
+                    json.dumps(components),
+                    now,
+                    listing_id,
+                ),
+            )
+
+    def _ensure_score_columns(self) -> None:
+        """
+        Add scored_at and gap_analysis columns if the DB predates them.
+        Safe migration: uses ADD COLUMN which is a no-op if column exists
+        in SQLite >= 3.37; we guard with PRAGMA table_info for older SQLite.
+        """
+        with self._connect() as conn:
+            existing = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(listings)").fetchall()
+            }
+            if "scored_at" not in existing:
+                conn.execute(
+                    "ALTER TABLE listings ADD COLUMN scored_at TEXT"
+                )
+            # gap_analysis already in DDL but might be missing in old DBs
+            if "gap_analysis" not in existing:
+                conn.execute(
+                    "ALTER TABLE listings ADD COLUMN gap_analysis TEXT"
+                )
+
+    # ------------------------------------------------------------------
     # Extraction cache (rule 18)
     # ------------------------------------------------------------------
 

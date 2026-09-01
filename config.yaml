@@ -23,3 +23,15 @@ storage:
 
 profile:
   profile_path: "profile.yaml"
+
+# ── Scoring weights (deterministic arithmetic — never sent to LLM) ──────────
+scoring:
+  target_seniority: "senior"
+  # User skills — comma-separated via EDGEDASH_SKILLS env var
+  # skills: "python, sql, spark"
+  weights:
+    skill_match:   0.45
+    seniority_fit: 0.25
+    location_fit:  0.15
+    recency:       0.15
+  batch_size: 25
