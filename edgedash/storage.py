@@ -6,8 +6,10 @@ through this module; the Dashboard reads exclusively through this module.
 
 Schema (v1)
 -----------
-listings      — one row per job listing, keyed on listing id
-cycle_log     — one row per agent run within a pipeline cycle
+listings          -- one row per job listing, keyed on listing id
+cycle_log         -- one row per agent run within a pipeline cycle
+state             -- key-value store for pipeline state
+extraction_cache  -- persistent LLM extraction cache (rule 18)
 """
 from __future__ import annotations
 
@@ -30,7 +32,7 @@ def make_listing_id(source: str, url: str) -> str:
 
     The same job posting fetched on different days always produces the same
     ID, so upsert_listings treats it as an update rather than a new row.
-    This is the single authoritative implementation — no other module should
+    This is the single authoritative implementation -- no other module should
     reimplement this logic.
 
     Returns a 16-character lowercase hex string (64-bit prefix of SHA-256).
@@ -51,12 +53,12 @@ CREATE TABLE IF NOT EXISTS listings (
     location        TEXT,
     seniority       TEXT,
     description     TEXT,
-    skills          TEXT,          -- JSON array
+    skills          TEXT,
     posted_at       TEXT,
     fetched_at      TEXT NOT NULL,
     score           REAL,
     score_notes     TEXT,
-    gap_analysis    TEXT,          -- JSON object
+    gap_analysis    TEXT,
     verified        INTEGER DEFAULT 0
 );
 
@@ -67,13 +69,19 @@ CREATE TABLE IF NOT EXISTS cycle_log (
     status          TEXT NOT NULL,
     records_touched INTEGER DEFAULT 0,
     notes           TEXT,
-    errors          TEXT,          -- JSON array
+    errors          TEXT,
     ran_at          TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS state (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS extraction_cache (
+    description_hash TEXT PRIMARY KEY,
+    result_json      TEXT NOT NULL,
+    created_at       TEXT NOT NULL
 );
 """
 
@@ -99,7 +107,7 @@ class Storage:
     # ------------------------------------------------------------------
 
     def init(self) -> None:
-        """Create tables if they don't exist yet."""
+        """Create tables if they do not exist yet."""
         with self._connect() as conn:
             conn.executescript(_DDL)
 
@@ -169,7 +177,6 @@ class Storage:
                     )
                     new_count += 1
                 else:
-                    # Refresh content fields but leave score / gap_analysis alone
                     conn.execute(
                         """
                         UPDATE listings
@@ -268,3 +275,164 @@ class Storage:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
+
+    # ------------------------------------------------------------------
+    # Extraction cache (rule 18)
+    # ------------------------------------------------------------------
+
+    def get_extraction_cache(self, description_hash: str) -> dict | None:
+        """
+        Return a previously stored extraction result, or None on cache miss.
+
+        Parameters
+        ----------
+        description_hash:
+            Full SHA-256 hex digest of the job description text.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT result_json FROM extraction_cache "
+                "WHERE description_hash = ?",
+                (description_hash,),
+            ).fetchone()
+        return json.loads(row["result_json"]) if row else None
+
+    def set_extraction_cache(self, description_hash: str, result: dict) -> None:
+        """
+        Persist a validated extraction result keyed on the description hash.
+
+        Parameters
+        ----------
+        description_hash:
+            Full SHA-256 hex digest of the job description text.
+        result:
+            Validated extraction dict to store.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO extraction_cache
+                    (description_hash, result_json, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(description_hash) DO UPDATE SET
+                    result_json = excluded.result_json,
+                    created_at  = excluded.created_at
+                """,
+                (description_hash, json.dumps(result), self._now()),
+            )
+
+    # ------------------------------------------------------------------
+    # Diagnostic reads (read-only, no writes, no schema changes)
+    # ------------------------------------------------------------------
+
+    def _diag_columns(self) -> set[str]:
+        """Return the actual column names present in the listings table."""
+        with self._connect() as conn:
+            rows = conn.execute("PRAGMA table_info(listings)").fetchall()
+            return {r["name"] for r in rows}
+
+    def diag_total_and_source_counts(self) -> dict:
+        """
+        Return total listing count and a best-effort per-source breakdown.
+
+        Source is derived from the description attribution line that
+        Arbeitnow appends to every listing.
+        """
+        with self._connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) AS n FROM listings"
+            ).fetchone()["n"]
+            rows = conn.execute(
+                "SELECT description FROM listings"
+            ).fetchall()
+
+        source_counts: dict[str, int] = {}
+        for r in rows:
+            desc = (r["description"] or "").lower()
+            if "arbeitnow" in desc:
+                label = "arbeitnow.com"
+            elif "apify" in desc:
+                label = "apify.com"
+            elif "indeed" in desc:
+                label = "indeed.com"
+            elif "linkedin" in desc:
+                label = "linkedin.com"
+            else:
+                label = "unknown"
+            source_counts[label] = source_counts.get(label, 0) + 1
+
+        return {"total": total, "by_source": source_counts}
+
+    def diag_cross_source_duplicates(self) -> list[dict]:
+        """
+        Return (title, company) pairs that appear under more than one
+        source label -- probable cross-source duplicates.
+        """
+        from collections import defaultdict
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT title, company, description FROM listings "
+                "WHERE title != '' AND company != ''"
+            ).fetchall()
+
+        pair_sources: dict[tuple, set] = defaultdict(set)
+        for r in rows:
+            key = (
+                (r["title"] or "").strip().lower(),
+                (r["company"] or "").strip().lower(),
+            )
+            desc = (r["description"] or "").lower()
+            if "arbeitnow" in desc:
+                label = "arbeitnow.com"
+            elif "apify" in desc:
+                label = "apify.com"
+            else:
+                label = "unknown"
+            pair_sources[key].add(label)
+
+        duplicates = []
+        for (title, company), sources in pair_sources.items():
+            if len(sources) > 1:
+                duplicates.append({
+                    "title":   title,
+                    "company": company,
+                    "count":   len(sources),
+                    "sources": sorted(sources),
+                })
+        duplicates.sort(key=lambda d: -d["count"])
+        return duplicates
+
+    def diag_recent_listings(self, n: int = 5) -> list[dict]:
+        """Return the n most recently fetched listings."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT title, company, fetched_at FROM listings "
+                "ORDER BY fetched_at DESC LIMIT ?",
+                (n,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def diag_quality_issues(self) -> list[dict]:
+        """Return listings with a NULL or empty title or company."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, title, company FROM listings "
+                "WHERE title IS NULL OR TRIM(title) = '' "
+                "   OR company IS NULL OR TRIM(company) = ''"
+            ).fetchall()
+
+        result = []
+        for r in rows:
+            issues = []
+            if not (r["title"] or "").strip():
+                issues.append("missing title")
+            if not (r["company"] or "").strip():
+                issues.append("missing company")
+            result.append({
+                "id":      r["id"],
+                "title":   r["title"],
+                "company": r["company"],
+                "issues":  issues,
+            })
+        return result

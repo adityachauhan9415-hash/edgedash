@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from dotenv import load_dotenv
+
+load_dotenv(override=False)
 
 
 @dataclass
@@ -38,6 +41,22 @@ class Config:
     # --- Profile ---
     profile_path: str = "profile.yaml"
 
+    # --- LLM (steering rules 15-21) ---
+    llm_provider: str = "gemini"
+    """Provider name: 'gemini' or 'ollama'. Resolved in edgedash/llm.py."""
+
+    llm_model: str = "gemini-3.6-flash"
+    """Model identifier passed verbatim to the provider API."""
+
+    llm_rpm: int = 15
+    """Max requests per minute — stays inside free-tier limits by default."""
+
+    llm_rps: float = 1.0
+    """Min seconds between requests (default: 1 s)."""
+
+    scoring_batch_size: int = 25
+    """Max listings scored per cycle (steering rule 21)."""
+
     # --- Logging ---
     log_level: str = "INFO"
 
@@ -64,5 +83,10 @@ class Config:
             use_mock_fetcher=use_mock,
             db_path=os.getenv("EDGEDASH_DB_PATH", "edgedash.db"),
             profile_path=os.getenv("EDGEDASH_PROFILE_PATH", "profile.yaml"),
+            llm_provider=os.getenv("EDGEDASH_LLM_PROVIDER", "gemini"),
+            llm_model=os.getenv("EDGEDASH_LLM_MODEL", "gemini-3.6-flash"),
+            llm_rpm=int(os.getenv("EDGEDASH_LLM_RPM", "15")),
+            llm_rps=float(os.getenv("EDGEDASH_LLM_RPS", "1.0")),
+            scoring_batch_size=int(os.getenv("EDGEDASH_SCORING_BATCH", "25")),
             log_level=os.getenv("EDGEDASH_LOG_LEVEL", "INFO"),
         )
