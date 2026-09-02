@@ -534,6 +534,58 @@ class Storage:
             result.append(d)
         return result
 
+    def read_skill_gap_snapshots(self) -> list[dict]:
+        """
+        Return a list of all distinct snapshots (earliest to latest),
+        each containing the skill gaps for that run.
+        """
+        with self._connect() as conn:
+            # Get all distinct run_ids with their earliest computed_at
+            run_rows = conn.execute(
+                """
+                SELECT run_id, MIN(computed_at) AS computed_at
+                FROM skill_gaps
+                GROUP BY run_id
+                ORDER BY MIN(computed_at) ASC
+                """
+            ).fetchall()
+
+        if not run_rows:
+            return []
+
+        snapshots = []
+        for run_row in run_rows:
+            run_id = run_row["run_id"]
+            computed_at = run_row["computed_at"]
+
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT skill, listings_blocked, opportunity_cost,
+                           mean_score, top_score, example_ids, low_confidence,
+                           computed_at, run_id
+                    FROM skill_gaps
+                    WHERE run_id = ?
+                    ORDER BY opportunity_cost DESC
+                    """,
+                    (run_id,),
+                ).fetchall()
+
+            gaps = []
+            for r in rows:
+                d = dict(r)
+                d["example_ids"]   = json.loads(d["example_ids"])
+                d["low_confidence"] = bool(d["low_confidence"])
+                gaps.append(d)
+
+            snapshots.append({
+                "run_id":      run_id,
+                "computed_at": computed_at,
+                "gaps":        gaps,
+            })
+
+        return snapshots
+
     # ------------------------------------------------------------------
     # Diagnostic reads (read-only, no writes, no schema changes)
     # ------------------------------------------------------------------

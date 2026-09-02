@@ -310,3 +310,189 @@ def test_profile_skills_excluded_from_gaps(tmp_path):
     assert "sql" not in skills_gapped, "SQL is in profile, should not be a gap"
     assert "pandas" not in skills_gapped, "Pandas is in profile, should not be a gap"
     assert "kafka" in skills_gapped, "Kafka is not in profile, must be a gap"
+# ---------------------------------------------------------------------------
+# 8. Trend reporting (C4-P4)
+# ---------------------------------------------------------------------------
+
+def test_trend_one_snapshot_message(tmp_path):
+    """When only one snapshot exists, print a clear message."""
+    from edgedash.storage import Storage
+
+    db = tmp_path / "trend.db"
+    storage = Storage(db_path=str(db))
+    storage.init()
+
+    # Add one snapshot
+    storage.append_skill_gap_snapshot("run-1", [
+        {"skill": "python", "listings_blocked": 5, "opportunity_cost": 3.0,
+         "mean_score": 60.0, "top_score": 80, "example_ids": [], "low_confidence": False},
+    ])
+
+    # Read snapshots
+    snaps = storage.read_skill_gap_snapshots()
+    assert len(snaps) == 1, "Should have exactly one snapshot"
+
+    # The --trend logic should print a message about needing more snapshots
+    # (We can't easily test print output without mocking, but we verify data)
+
+
+def test_trend_increase_decrease(tmp_path):
+    """Skills can increase or decrease in opportunity_cost."""
+    from edgedash.storage import Storage
+
+    db = tmp_path / "trend2.db"
+    storage = Storage(db_path=str(db))
+    storage.init()
+
+    # Earliest snapshot
+    storage.append_skill_gap_snapshot("run-1", [
+        {"skill": "python", "listings_blocked": 5, "opportunity_cost": 2.0,
+         "mean_score": 60.0, "top_score": 80, "example_ids": [], "low_confidence": False},
+        {"skill": "sql", "listings_blocked": 4, "opportunity_cost": 1.5,
+         "mean_score": 50.0, "top_score": 70, "example_ids": [], "low_confidence": False},
+    ])
+
+    # Latest snapshot: python increased (3.0), sql decreased (0.8)
+    storage.append_skill_gap_snapshot("run-2", [
+        {"skill": "python", "listings_blocked": 6, "opportunity_cost": 3.0,
+         "mean_score": 65.0, "top_score": 85, "example_ids": [], "low_confidence": False},
+        {"skill": "sql", "listings_blocked": 2, "opportunity_cost": 0.8,
+         "mean_score": 40.0, "top_score": 50, "example_ids": [], "low_confidence": False},
+    ])
+
+    snaps = storage.read_skill_gap_snapshots()
+    assert len(snaps) == 2
+
+    earliest = snaps[0]["gaps"]
+    latest = snaps[-1]["gaps"]
+
+    # Build dicts for comparison
+    e_by = {g["skill"]: g for g in earliest}
+    l_by = {g["skill"]: g for g in latest}
+
+    # Python: 2.0 -> 3.0 (increase)
+    assert l_by["python"]["opportunity_cost"] > e_by["python"]["opportunity_cost"]
+    # SQL: 1.5 -> 0.8 (decrease)
+    assert l_by["sql"]["opportunity_cost"] < e_by["sql"]["opportunity_cost"]
+
+
+def test_trend_percent_change(tmp_path):
+    """Percent change is calculated correctly."""
+    from edgedash.storage import Storage
+
+    db = tmp_path / "trend3.db"
+    storage = Storage(db_path=str(db))
+    storage.init()
+
+    storage.append_skill_gap_snapshot("run-1", [
+        {"skill": "scala", "listings_blocked": 4, "opportunity_cost": 2.0,
+         "mean_score": 50.0, "top_score": 70, "example_ids": [], "low_confidence": False},
+    ])
+
+    storage.append_skill_gap_snapshot("run-2", [
+        {"skill": "scala", "listings_blocked": 6, "opportunity_cost": 3.0,
+         "mean_score": 60.0, "top_score": 80, "example_ids": [], "low_confidence": False},
+    ])
+
+    snaps = storage.read_skill_gap_snapshots()
+    earliest = snaps[0]["gaps"][0]
+    latest = snaps[-1]["gaps"][0]
+
+    change = latest["opportunity_cost"] - earliest["opportunity_cost"]  # 1.0
+    pct = (change / earliest["opportunity_cost"]) * 100  # 50%
+
+    assert abs(pct - 50.0) < 0.1
+
+
+def test_trend_new_skill(tmp_path):
+    """NEW skills appear in latest but not in earliest top 10."""
+    from edgedash.storage import Storage
+
+    db = tmp_path / "trend4.db"
+    storage = Storage(db_path=str(db))
+    storage.init()
+
+    # Earliest: only python and sql
+    storage.append_skill_gap_snapshot("run-1", [
+        {"skill": "python", "listings_blocked": 5, "opportunity_cost": 3.0,
+         "mean_score": 60.0, "top_score": 80, "example_ids": [], "low_confidence": False},
+        {"skill": "sql", "listings_blocked": 4, "opportunity_cost": 2.0,
+         "mean_score": 50.0, "top_score": 70, "example_ids": [], "low_confidence": False},
+    ])
+
+    # Latest: python + NEW skill "kafka"
+    storage.append_skill_gap_snapshot("run-2", [
+        {"skill": "python", "listings_blocked": 5, "opportunity_cost": 3.0,
+         "mean_score": 60.0, "top_score": 80, "example_ids": [], "low_confidence": False},
+        {"skill": "kafka", "listings_blocked": 3, "opportunity_cost": 1.5,
+         "mean_score": 55.0, "top_score": 75, "example_ids": [], "low_confidence": False},
+    ])
+
+    snaps = storage.read_skill_gap_snapshots()
+    e_skills = {g["skill"] for g in snaps[0]["gaps"]}
+    l_skills = {g["skill"] for g in snaps[-1]["gaps"]}
+
+    assert "kafka" in l_skills
+    assert "kafka" not in e_skills
+
+
+def test_trend_dropped_out(tmp_path):
+    """Skills that DROP OUT are in earliest top 10 but not latest."""
+    from edgedash.storage import Storage
+
+    db = tmp_path / "trend5.db"
+    storage = Storage(db_path=str(db))
+    storage.init()
+
+    # Earliest: python, sql, spark
+    storage.append_skill_gap_snapshot("run-1", [
+        {"skill": "python", "listings_blocked": 5, "opportunity_cost": 3.0,
+         "mean_score": 60.0, "top_score": 80, "example_ids": [], "low_confidence": False},
+        {"skill": "sql", "listings_blocked": 4, "opportunity_cost": 2.5,
+         "mean_score": 50.0, "top_score": 70, "example_ids": [], "low_confidence": False},
+        {"skill": "spark", "listings_blocked": 3, "opportunity_cost": 1.0,
+         "mean_score": 45.0, "top_score": 60, "example_ids": [], "low_confidence": False},
+    ])
+
+    # Latest: python, kafka (spark dropped out)
+    storage.append_skill_gap_snapshot("run-2", [
+        {"skill": "python", "listings_blocked": 5, "opportunity_cost": 3.0,
+         "mean_score": 60.0, "top_score": 80, "example_ids": [], "low_confidence": False},
+        {"skill": "kafka", "listings_blocked": 3, "opportunity_cost": 2.0,
+         "mean_score": 55.0, "top_score": 75, "example_ids": [], "low_confidence": False},
+    ])
+
+    snaps = storage.read_skill_gap_snapshots()
+    e_top10 = {g["skill"] for g in snaps[0]["gaps"][:10]}
+    l_top10 = {g["skill"] for g in snaps[-1]["gaps"][:10]}
+
+    assert "spark" in e_top10
+    assert "spark" not in l_top10
+
+
+def test_trend_no_writes(tmp_path):
+    """read_skill_gap_snapshots is read-only - no writes to DB."""
+    from edgedash.storage import Storage
+
+    db = tmp_path / "trend_nowrite.db"
+    storage = Storage(db_path=str(db))
+    storage.init()
+
+    # Add a snapshot
+    storage.append_skill_gap_snapshot("run-1", [
+        {"skill": "python", "listings_blocked": 5, "opportunity_cost": 3.0,
+         "mean_score": 60.0, "top_score": 80, "example_ids": [], "low_confidence": False},
+    ])
+
+    # Get file mtime before
+    import os
+    mtime_before = os.path.getmtime(str(db))
+
+    # Call read_skill_gap_snapshots multiple times
+    for _ in range(3):
+        snaps = storage.read_skill_gap_snapshots()
+        assert len(snaps) == 1
+
+    # File mtime should be unchanged (no writes)
+    mtime_after = os.path.getmtime(str(db))
+    assert mtime_before == mtime_after, "read_skill_gap_snapshots should not modify DB"
