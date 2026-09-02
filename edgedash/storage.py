@@ -84,6 +84,19 @@ CREATE TABLE IF NOT EXISTS extraction_cache (
     result_json      TEXT NOT NULL,
     created_at       TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS skill_gaps (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id           TEXT NOT NULL,
+    computed_at      TEXT NOT NULL,
+    skill            TEXT NOT NULL,
+    listings_blocked INTEGER NOT NULL,
+    opportunity_cost REAL NOT NULL,
+    mean_score       REAL NOT NULL,
+    top_score        INTEGER NOT NULL,
+    example_ids      TEXT NOT NULL,   -- JSON array, max 5
+    low_confidence   INTEGER NOT NULL  -- 1 if listings_blocked < 3
+);
 """
 
 
@@ -437,6 +450,89 @@ class Storage:
                 """,
                 (description_hash, json.dumps(result), self._now()),
             )
+
+    # ------------------------------------------------------------------
+    # Skill-gap snapshots (rule 25: append-only, never overwrite)
+    # ------------------------------------------------------------------
+
+    def append_skill_gap_snapshot(
+        self,
+        run_id: str,
+        gaps: list[dict],
+    ) -> int:
+        """
+        Append a batch of gap rows for one run.  Never overwrites previous rows.
+
+        Parameters
+        ----------
+        run_id:
+            Unique identifier for this gap-analysis run (e.g. cycle_id).
+        gaps:
+            List of dicts, each with keys:
+                skill, listings_blocked, opportunity_cost, mean_score,
+                top_score, example_ids (list[str]), low_confidence (bool).
+
+        Returns
+        -------
+        int
+            Number of rows inserted.
+        """
+        now = self._now()
+        with self._connect() as conn:
+            for gap in gaps:
+                conn.execute(
+                    """
+                    INSERT INTO skill_gaps
+                        (run_id, computed_at, skill, listings_blocked,
+                         opportunity_cost, mean_score, top_score,
+                         example_ids, low_confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        now,
+                        gap["skill"],
+                        gap["listings_blocked"],
+                        gap["opportunity_cost"],
+                        gap["mean_score"],
+                        gap["top_score"],
+                        json.dumps(gap.get("example_ids", [])),
+                        1 if gap.get("low_confidence") else 0,
+                    ),
+                )
+        return len(gaps)
+
+    def read_latest_skill_gaps(self) -> list[dict]:
+        """
+        Return all rows from the most recent run_id, ordered by
+        opportunity_cost descending.  Returns [] if no snapshots exist.
+        """
+        with self._connect() as conn:
+            # Use id DESC as tiebreaker when computed_at identical
+            run_row = conn.execute(
+                "SELECT run_id FROM skill_gaps ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if run_row is None:
+                return []
+            latest_run = run_row["run_id"]
+            rows = conn.execute(
+                """
+                SELECT skill, listings_blocked, opportunity_cost,
+                       mean_score, top_score, example_ids, low_confidence,
+                       computed_at, run_id
+                FROM skill_gaps
+                WHERE run_id = ?
+                ORDER BY opportunity_cost DESC
+                """,
+                (latest_run,),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["example_ids"]   = json.loads(d["example_ids"])
+            d["low_confidence"] = bool(d["low_confidence"])
+            result.append(d)
+        return result
 
     # ------------------------------------------------------------------
     # Diagnostic reads (read-only, no writes, no schema changes)
