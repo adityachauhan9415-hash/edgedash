@@ -147,6 +147,156 @@ def _audit() -> None:
         print(f"  ... and {len(singletons) - 80} more")
 
 
+def _suggest_aliases() -> None:
+    """
+    Read-only: collect canonical skills NOT in alias map, ask LLM for proposals.
+
+    Makes exactly ONE call to llm.complete_json.  Prints warning, then
+    proposals as ready-to-paste YAML.
+    """
+    import json
+    from collections import Counter
+    from edgedash.config import Config
+    from edgedash.storage import Storage
+    from edgedash.llm import complete_json
+
+    config  = Config.from_env()
+    existing_aliases: dict = getattr(config, "skill_aliases", {}) or {}
+    storage = Storage(db_path=config.db_path)
+    storage.init()
+
+    # Collect all canonical skill strings from DB
+    try:
+        with storage._connect() as conn:
+            rows = conn.execute("SELECT result_json FROM extraction_cache").fetchall()
+    except Exception as exc:
+        print(f"ERROR reading extraction_cache: {exc}")
+        return
+
+    if not rows:
+        print("extraction_cache is empty — run at least one scoring cycle first.")
+        return
+
+    counter: Counter = Counter()
+    for row in rows:
+        try:
+            data = json.loads(row["result_json"])
+        except (ValueError, KeyError):
+            continue
+        for skill in data.get("required_skills", []):
+            if skill and isinstance(skill, str):
+                canon = canonical(skill.strip(), existing_aliases)
+                if canon:
+                    counter[canon] += 1
+        for skill in data.get("nice_to_have", []):
+            if skill and isinstance(skill, str):
+                canon = canonical(skill.strip(), existing_aliases)
+                if canon:
+                    counter[canon] += 1
+
+    # Filter: only keep skills NOT already covered by aliases
+    # A skill is "covered" if it appears as a KEY OR as a VALUE in the alias map
+    covered = set(existing_aliases.keys()) | set(existing_aliases.values())
+    uncovered = {
+        skill: cnt
+        for skill, cnt in counter.items()
+        if skill not in covered
+    }
+
+    if not uncovered:
+        print("All canonical skills in the DB are already covered by skill_aliases.")
+        return
+
+    # Prepare top 15 uncovered for LLM
+    top_uncovered = sorted(uncovered.items(), key=lambda x: -x[1])[:15]
+    skill_list = "\n".join(f"- {s} (count: {c})" for s, c in top_uncovered)
+
+    # Build prompt
+    prompt = f"""You are a career data expert helping merge duplicate skill names.
+
+We have the following skill strings from job listings (already canonicalised, sorted by frequency):
+{skill_list}
+
+These are NOT yet covered by our alias map:
+{json.dumps(list(uncovered.keys())[:20], indent=2)}
+
+Your task: propose groups of these skills that clearly represent the same thing.
+For each group, provide:
+- canonical: the preferred canonical name
+- variants: list of other strings that should map to this canonical
+- confidence: "high" if you're certain, "low" if uncertain
+
+Return a JSON list like:
+[
+  {{"canonical": "python", "variants": ["py", "python3"], "confidence": "high"}},
+  {{"canonical": "aws", "variants": ["amazon web services"], "confidence": "low"}}
+]
+
+Rules:
+- Only propose merges you are confident about
+- Do NOT merge Node.js and JavaScript (they are different)
+- Do NOT merge different skills just because they share some characters
+- If you cannot find any good groupings, return an empty list []
+- Each variant should appear in only ONE proposal
+"""
+
+    schema = {
+        "required": [],
+        "types": {"list": list},
+    }
+
+    try:
+        proposals = complete_json(prompt, schema)
+    except Exception as exc:
+        print(f"ERROR calling LLM: {exc}")
+        return
+
+    if not proposals:
+        print("No alias suggestions found.")
+        return
+
+    # Print warning
+    print("\n" + "=" * 70)
+    print("⚠️  WARNING: Suggestions require human review")
+    print("⚠️  Merging distinct skills is worse than leaving them separate.")
+    print("=" * 70 + "\n")
+
+    # Check for CONFLICT with existing aliases
+    existing_keys = set(existing_aliases.keys())
+    existing_vals = set(existing_aliases.values())
+
+    print("--- Proposed aliases (ready to paste into config.yaml) ---\n")
+    print("skill_aliases:")
+
+    for prop in proposals:
+        canon = prop.get("canonical", "")
+        variants = prop.get("variants", [])
+        confidence = prop.get("confidence", "low")
+
+        # Flag conflicts
+        conflicts = []
+        if canon in existing_keys:
+            conflicts.append(f"canonical '{canon}' already a key in aliases")
+        if canon in existing_vals:
+            conflicts.append(f"canonical '{canon}' already a value in aliases")
+        for v in variants:
+            if v in existing_keys:
+                conflicts.append(f"variant '{v}' already a key in aliases")
+            if v in existing_vals:
+                conflicts.append(f"variant '{v}' already a value in aliases")
+
+        if conflicts:
+            print(f"  # ⚠️  CONFLICT: {'; '.join(conflicts)}")
+
+        conf_mark = "  # confidence: high" if confidence == "high" else "  # confidence: low (review carefully)"
+        print(f"  {canon}: {canon}")
+        for v in variants:
+            print(f"  {v}: {canon}")
+        print(f"{conf_mark}\n")
+
+    print("--- End of proposals ---\n")
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(prog="python -m edgedash.skills")
@@ -155,8 +305,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Print a read-only audit of raw skill strings in the extraction cache.",
     )
+    parser.add_argument(
+        "--suggest-aliases",
+        action="store_true",
+        help="Query LLM for alias suggestions for uncovered skills.",
+    )
     args = parser.parse_args()
     if args.audit:
         _audit()
+    elif args.suggest_aliases:
+        _suggest_aliases()
     else:
         parser.print_help()
