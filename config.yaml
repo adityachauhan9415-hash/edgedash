@@ -24,6 +24,26 @@ storage:
 profile:
   profile_path: "profile.yaml"
 
+# Mine to edit — add aliases as I discover collisions in my data.
+# Keys and values are lowercase. When uncertain, do NOT merge (rule 23).
+# Node/Node.js and JavaScript are intentionally kept separate.
+skill_aliases:
+  k8s: kubernetes
+  postgres: postgres
+  postgresql: postgres
+  psql: postgres
+  gcp: gcp
+  google cloud: gcp
+  google cloud platform: gcp
+  ml: machine learning
+  machine learning: machine learning
+  ci/cd: ci/cd
+  ci cd: ci/cd
+  cicd: ci/cd
+  nodejs: node.js
+  ci/cd pipelines: ci/cd
+  ci/cd-pipelines: ci/cd
+
 # ── Scoring weights (deterministic arithmetic — never sent to LLM) ──────────
 scoring:
   target_seniority: "senior"
