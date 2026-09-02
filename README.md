@@ -108,6 +108,11 @@ each agent's result as it completes, and a summary table. Run it twice to
 watch deduplication in action.
 
 ---
+## Current analysis
+
+**Current #1 skill gap:** English — I’ll improve my professional and technical English communication through regular writing, reading, and interview practice.
+
+**Weighting check:** Raw frequency and opportunity-cost ranking produced the same top-10 ordering on 52 scored listings. This suggests the contributing job scores are clustered closely enough that weighting does not change the current ranking.
 
 ## Design decisions
 
