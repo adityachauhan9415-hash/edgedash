@@ -57,6 +57,9 @@ class Config:
     scoring_batch_size: int = 25
     """Max listings scored per cycle (steering rule 21)."""
 
+    fetch_interval_hours: int = 6
+    """Minimum hours between fetches for orchestration."""
+
     # --- Logging ---
     log_level: str = "INFO"
 
@@ -88,5 +91,8 @@ class Config:
             llm_rpm=int(os.getenv("EDGEDASH_LLM_RPM", "15")),
             llm_rps=float(os.getenv("EDGEDASH_LLM_RPS", "1.0")),
             scoring_batch_size=int(os.getenv("EDGEDASH_SCORING_BATCH", "25")),
+            fetch_interval_hours=int(
+                os.getenv("EDGEDASH_FETCH_INTERVAL_HOURS", "6")
+            ),
             log_level=os.getenv("EDGEDASH_LOG_LEVEL", "INFO"),
         )
