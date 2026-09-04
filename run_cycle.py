@@ -28,7 +28,8 @@ if sys.platform == "win32":
     os.system("")          # activates VT100 processing in the current console
     # Ensure stdout can handle UTF-8 box-drawing chars regardless of redirect
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace") Config
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+from edgedash.config import Config
 from edgedash.orchestrator import run_cycle
 
 if __name__ == "__main__":
