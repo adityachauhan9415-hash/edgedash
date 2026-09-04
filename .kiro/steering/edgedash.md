@@ -158,3 +158,26 @@ Raise these with the user before implementing:
 26. **Every aggregate number must be traceable to the rows that produced it.** Any reported gap must be able to list the specific listing IDs it was computed from. No number appears in the dashboard that I cannot drill into.
 
 27. **Report the sample size alongside every aggregate.** A gap computed from 3 listings and a gap computed from 90 listings must never be presented as equally reliable.
+---
+
+## Orchestration
+
+28. **Orchestrator reads system state and decides which agents run.**
+   It never runs a fixed sequence. Skipping because there is no work is success.
+
+29. **Every delegation has an explicit goal and explicit stop conditions**
+   such as max items or max duration. Limits come from Orchestrator/config,
+   not from the sub-agent.
+
+30. **Orchestrator coordinates only:**
+   read state, build plan, delegate, collect results, log.
+   No fetch/scoring/analysis logic inside it.
+
+31. **Print and log the PLAN before execution:**
+   agents that run, agents skipped, and the state value/reason for each decision.
+
+32. **One agent failure must not stop the cycle.**
+   Log it, continue remaining tasks, and mark cycle partial.
+
+33. **Every cycle writes exactly one summary row containing:**
+   what ran, what was skipped and why, duration per agent, and outcome.
